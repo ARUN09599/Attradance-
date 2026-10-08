@@ -1,0 +1,193 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// --- PIN DEFINITIONS FOR ESP8266 (NodeMCU) ---
+#define SS_PIN   D8   // GPIO15 (SDA/SS on RC522)
+#define RST_PIN  D0   // GPIO16 (RST on RC522)
+
+// --- WIFI & GOOGLE SCRIPT CREDENTIALS ---
+const char* ssid            = "realme C21";                  // Your Hotspot SSID
+const char* password        = "";                            // Open Network (No Password)
+const char* googleScriptURL = "YOUR_GOOGLE_SCRIPT_WEB_APP_URL"; // Paste your Web App URL here
+
+// --- INITIALIZE OBJECTS ---
+MFRC522 rfid(SS_PIN, RST_PIN);
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Change address to 0x3F if screen stays blank
+
+// --- ANIMATION TRACKING VARIABLES ---
+unsigned long lastAnimTime = 0;
+int animStep = 0;
+
+// Typing effect animation
+void typingEffect(uint8_t row, String message, int delayMs = 50) {
+  lcd.setCursor(0, row);
+  for (uint8_t i = 0; i < message.length() && i < 16; i++) {
+    lcd.print(message[i]);
+    delay(delayMs);
+  }
+}
+
+// Blinking text effect animation
+void blinkText(uint8_t row, String message, int blinks = 2, int speedMs = 250) {
+  for (int i = 0; i < blinks; i++) {
+    lcd.setCursor(0, row);
+    lcd.print(message);
+    delay(speedMs);
+    lcd.setCursor(0, row);
+    lcd.print("                ");
+    delay(speedMs);
+  }
+  lcd.setCursor(0, row);
+  lcd.print(message);
+}
+
+void showDefaultMessage() {
+  lcd.clear();
+  lcd.setCursor(1, 0);
+  lcd.print("> SCAN CARD <");
+  animStep = 0;
+  lastAnimTime = millis();
+}
+
+void animateDefaultScreen() {
+  if (millis() - lastAnimTime > 400) {
+    lastAnimTime = millis();
+
+    lcd.setCursor(0, 1);
+    switch (animStep) {
+      case 0: lcd.print(">>>  Below   <<<"); break;
+      case 1: lcd.print(" >>> Below  <<< "); break;
+      case 2: lcd.print("  >>>Below<<<   "); break;
+      case 3: lcd.print("   >>Below<<    "); break;
+    }
+    animStep = (animStep + 1) % 4;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize I2C LCD (SDA = D2, SCL = D1)
+  Wire.begin(D2, D1);
+  lcd.init();
+  lcd.backlight();
+
+  // Animated Startup Screen
+  lcd.clear();
+  typingEffect(0, "Connecting WiFi", 40);
+
+  // Connect to Wi-Fi Hotspot
+  WiFi.begin(ssid);
+  int dots = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(400);
+    Serial.print(".");
+    
+    lcd.setCursor(0, 1);
+    String loadingStr = "Please wait";
+    for (int i = 0; i < dots; i++) loadingStr += ".";
+    while (loadingStr.length() < 16) loadingStr += " ";
+    lcd.print(loadingStr);
+
+    dots = (dots + 1) % 5;
+  }
+
+  // Initialize SPI & RFID
+  SPI.begin();
+  rfid.PCD_Init();
+
+  Serial.println("\nWiFi Connected!");
+  Serial.println("System Ready.");
+
+  // Connection Success Animation
+  lcd.clear();
+  typingEffect(0, "WiFi Connected!", 30);
+  blinkText(1, ">> READY! <<    ", 2, 200);
+  delay(1000);
+
+  showDefaultMessage();
+}
+
+void loop() {
+  // Run background idle arrow animation while waiting
+  animateDefaultScreen();
+
+  // Check for RFID card
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+    return;
+  }
+
+  // Read Card UID
+  String cardID = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) cardID += "0";
+    cardID += String(rfid.uid.uidByte[i], HEX);
+  }
+  cardID.toUpperCase();
+
+  Serial.print("Card Scanned: ");
+  Serial.println(cardID);
+
+  // Card Detected Animation
+  lcd.clear();
+  typingEffect(0, "Card Detected!", 25);
+  lcd.setCursor(0, 1);
+  lcd.print("ID: " + cardID);
+  delay(800);
+
+  // Send Data to Google Sheets
+  if (WiFi.status() == WL_CONNECTED) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Logging Data...");
+    blinkText(1, "Please Wait...  ", 2, 250);
+
+    WiFiClientSecure client;
+    client.setInsecure(); // Bypass SSL verification
+
+    HTTPClient http;
+    String fullURL = String(googleScriptURL) + "?cardID=" + cardID;
+
+    http.begin(client, fullURL);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+    int httpCode = http.GET();
+
+    lcd.clear();
+    if (httpCode > 0) {
+      String responseName = http.getString(); // Receive Student Name from Google Sheets
+      
+      lcd.setCursor(0, 0);
+      lcd.print("Welcome!");
+      lcd.setCursor(0, 1);
+      
+      if (responseName.length() > 0 && responseName != "Unknown") {
+        lcd.print(responseName.substring(0, 16)); // Show student name
+      } else {
+        lcd.print("Attendance Saved");
+      }
+    } else {
+      lcd.setCursor(0, 0);
+      lcd.print("Server Error!");
+      lcd.setCursor(0, 1);
+      lcd.print("Code: " + String(httpCode));
+    }
+    http.end();
+  } else {
+    lcd.clear();
+    blinkText(0, "WiFi Disconnect!", 3, 250);
+  }
+
+  delay(2500); // Pause before returning to idle screen
+
+  showDefaultMessage();
+
+  // Halt RFID scanner for next scan
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
