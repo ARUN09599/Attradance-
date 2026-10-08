@@ -1,0 +1,30 @@
+function doGet(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var cardID = e.parameter.cardID;
+  
+  if (!cardID) {
+    return ContentService.createTextOutput("Error: No Card ID provided");
+  }
+
+  // Get current timestamp
+  var now = new Date();
+  var dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), "HH:mm:ss");
+
+  // Lookup Card ID in Column A to find Student/User Name (Column B)
+  var data = sheet.getDataRange().getValues();
+  var userName = "Unknown";
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0].toString().trim().toUpperCase() === cardID.trim().toUpperCase()) {
+      userName = data[i][1]; // Column B holds the name
+      break;
+    }
+  }
+
+  // Append new attendance row [Card ID, Name, Date, Time]
+  sheet.appendRow([cardID, userName, dateStr, timeStr]);
+
+  // Return Student Name to ESP8266 so it can display it on the LCD screen
+  return ContentService.createTextOutput(userName);
+}
